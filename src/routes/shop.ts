@@ -14,6 +14,7 @@ import {
   createOrder,
   listOrders,
   getOrder,
+  updateOrderStatus,
 } from '../controllers/shopController.js'
 
 const router = Router()
@@ -37,6 +38,7 @@ router.post('/cart/clear', authMiddleware, clearCart)
 router.post('/orders', authMiddleware, createOrder)
 router.get('/orders', authMiddleware, listOrders)
 router.get('/orders/:id', authMiddleware, getOrder)
+router.patch('/orders/:id/status', authMiddleware, ownerOnly, updateOrderStatus)
 
 export default router
 

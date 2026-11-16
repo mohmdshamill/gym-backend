@@ -39,6 +39,8 @@ temp/
 *.db
 *.sql
 *.dump
+# ...but Prisma migrations must be committed
+!prisma/migrations/**/*.sql
 
 # If you export Postgres dumps, ignore them too
 *.bak

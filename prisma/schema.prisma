@@ -36,6 +36,7 @@ model User{
   id String @id @default(uuid())
   name String
   email String @unique
+  phone String?
   password String
   role Role @default(USER)
   heightCm Int?
@@ -52,6 +53,7 @@ model User{
   userTrainers UserTrainer[]
 
   // Membership fields
+  planId               String?
   membershipPlan       MembershipPlan?
   planStartsAt         DateTime?
   planEndsAt           DateTime?
@@ -116,6 +118,7 @@ model Plan {
   planDurationDays  Int?
   planTrainersLimit Int?
   planFreeProducts  Int?
+  totalSlots        Int?            @default(50)
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
 }

@@ -20,7 +20,7 @@ dotenv.config();
 
 const app = express();
 
-const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://localhost:5174').trim();
+const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').trim();
 
 console.log('Using FRONTEND_URL:', FRONTEND_URL);
 

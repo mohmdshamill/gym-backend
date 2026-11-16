@@ -113,33 +113,27 @@ export const getCart = async (req: Request, res: Response) => {
 
     const subtotal = enriched.reduce((sum: number, it: { lineTotal: string }) => sum + Number(it.lineTotal), 0)
 
-    // Compute freebies information for the month and preview discount
+    // Compute freebies information for products under ₹800
     const dbUser = await prisma.user.findUnique({ where: { id: user.id } })
-    const freebiesLimit = (dbUser as any)?.freeProductsPerMonth as number | null | undefined
+    const planEnds = (dbUser as any)?.planEndsAt as Date | null | undefined
+    const planActive = Boolean(planEnds && new Date(planEnds) > new Date())
+    const freebiesLimit = planActive ? ((dbUser as any)?.freeProductsPerMonth as number | null | undefined) : 0
+    const freebiesRemaining = Math.max(0, freebiesLimit ?? 0)
 
-    let freebiesRemaining = 0
     let potentialDiscount = 0
-    if (freebiesLimit && freebiesLimit > 0) {
-      const now = new Date()
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1)
-
-      const itemsThisMonth = await prisma.orderItem.findMany({
-        where: { order: { userId: user.id, createdAt: { gte: monthStart, lt: monthEnd } } },
-        select: { quantity: true },
-      })
-      const used = itemsThisMonth.reduce((sum, it) => sum + it.quantity, 0)
-      freebiesRemaining = Math.max(0, freebiesLimit - used)
-
-      if (freebiesRemaining > 0) {
-        const unitPrices: number[] = []
-        for (const ci of items) {
-          for (let i = 0; i < ci.quantity; i++) unitPrices.push(Number(ci.product.price))
+    if (freebiesRemaining > 0) {
+      const eligibleUnitPrices: number[] = []
+      for (const ci of items) {
+        const unitPrice = Number(ci.product.price)
+        if (unitPrice <= 800) {
+          for (let i = 0; i < ci.quantity; i++) {
+            eligibleUnitPrices.push(unitPrice)
+          }
         }
-        unitPrices.sort((a, b) => a - b)
-        const freeUnits = unitPrices.slice(0, Math.min(freebiesRemaining, unitPrices.length))
-        potentialDiscount = freeUnits.reduce((s, p) => s + p, 0)
       }
+      eligibleUnitPrices.sort((a, b) => a - b)
+      const freeUnits = eligibleUnitPrices.slice(0, Math.min(freebiesRemaining, eligibleUnitPrices.length))
+      potentialDiscount = freeUnits.reduce((s, p) => s + p, 0)
     }
 
     const effectiveTotal = Math.max(0, subtotal - potentialDiscount)
@@ -307,41 +301,37 @@ export const createOrder = async (req: Request, res: Response) => {
       }
     }
 
-    // Membership freebies: compute remaining freebies for this calendar month
+    // Membership freebies: compute remaining freebies for products <= ₹800
     const dbUser = await prisma.user.findUnique({ where: { id: auth.id } })
-    const freebiesLimit = (dbUser as any)?.freeProductsPerMonth as number | null | undefined
+    const planEnds = (dbUser as any)?.planEndsAt as Date | null | undefined
+    const planActive = Boolean(planEnds && new Date(planEnds) > new Date())
+    const freebiesLimit = planActive ? ((dbUser as any)?.freeProductsPerMonth as number | null | undefined) : 0
+    const remaining = Math.max(0, freebiesLimit ?? 0)
 
     let discount = 0
-    if (freebiesLimit && freebiesLimit > 0) {
-      const now = new Date()
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+    let freeUnitsClaimed = 0
 
-      // count items purchased this month (as freebies consumed)
-      const itemsThisMonth = await prisma.orderItem.findMany({
-        where: { order: { userId: auth.id, createdAt: { gte: monthStart, lt: monthEnd } } },
-        select: { quantity: true, priceAtPurchase: true },
-      })
-      const used = itemsThisMonth.reduce((sum, it) => sum + it.quantity, 0)
-      const remaining = Math.max(0, freebiesLimit - used)
-
-      if (remaining > 0) {
-        // Build a flat list of units with their price, sort ascending to maximize value to user
-        const unitPrices: number[] = []
-        for (const ci of cartItems) {
-          for (let i = 0; i < ci.quantity; i++) unitPrices.push(Number(ci.product.price))
+    if (remaining > 0) {
+      const eligibleUnitPrices: number[] = []
+      for (const ci of cartItems) {
+        const unitPrice = Number(ci.product.price)
+        if (unitPrice <= 800) {
+          for (let i = 0; i < ci.quantity; i++) {
+            eligibleUnitPrices.push(unitPrice)
+          }
         }
-        unitPrices.sort((a, b) => a - b)
-        const freeUnits = unitPrices.slice(0, Math.min(remaining, unitPrices.length))
-        discount = freeUnits.reduce((s, p) => s + p, 0)
       }
+      eligibleUnitPrices.sort((a, b) => a - b)
+      const freeUnits = eligibleUnitPrices.slice(0, Math.min(remaining, eligibleUnitPrices.length))
+      discount = freeUnits.reduce((s, p) => s + p, 0)
+      freeUnitsClaimed = freeUnits.length
     }
 
     // Compute total after discount
     const subtotal = cartItems.reduce((sum, ci) => sum + (Number(ci.product.price) * ci.quantity), 0)
     const total = Math.max(0, subtotal - discount)
 
-    // Transaction: create order, items, decrement stock, clear cart
+    // Transaction: create order, items, decrement stock, decrement user freebies, clear cart
     const order = await prisma.$transaction(async (tx) => {
       const created = await tx.order.create({
         data: {
@@ -352,10 +342,7 @@ export const createOrder = async (req: Request, res: Response) => {
         },
       })
 
-      // Plans are handled via membership endpoints; no plan capture here
-
       for (const ci of cartItems) {
-        const p: any = ci.product as any
         await tx.orderItem.create({
           data: {
             orderId: created.id,
@@ -366,8 +353,16 @@ export const createOrder = async (req: Request, res: Response) => {
         })
         // Decrement stock for products
         await tx.product.update({ where: { id: ci.productId }, data: { stock: { decrement: ci.quantity } } })
+      }
 
-        // No plan capture here: plans are handled via membership endpoints
+      // Deduct used free products from user's membership balance
+      if (freeUnitsClaimed > 0) {
+        await tx.user.update({
+          where: { id: auth.id },
+          data: {
+            freeProductsPerMonth: Math.max(0, (freebiesLimit ?? 0) - freeUnitsClaimed),
+          } as any,
+        })
       }
 
       await tx.cartItem.deleteMany({ where: { userId: auth.id } })
@@ -403,11 +398,44 @@ export const listOrders = async (req: Request, res: Response) => {
     const orders = await prisma.order.findMany({
       where: isOwner ? {} : { userId: auth.id },
       orderBy: { createdAt: 'desc' },
-      include: { items: { include: { product: true } }, user: { select: { id: true, name: true, email: true } } },
+      include: { items: { include: { product: true } }, user: { select: { id: true, name: true, email: true, phone: true } } },
     })
     return res.status(200).json({ orders })
   } catch (err) {
     console.error('listOrders error', err)
+    return res.status(500).json({ message: 'Internal server error' })
+  }
+}
+
+// OWNER: update order status (tracking)
+export const updateOrderStatus = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params
+    const { status } = req.body as { status?: string }
+    if (!status || !(Object.values(OrderStatus) as string[]).includes(status)) {
+      return res.status(400).json({ message: 'Invalid status' })
+    }
+    const existing = await prisma.order.findUnique({ where: { id }, include: { items: true } })
+    if (!existing) return res.status(404).json({ message: 'Order not found' })
+    if (existing.status === OrderStatus.CANCELLED) {
+      return res.status(400).json({ message: 'Cancelled orders cannot be changed' })
+    }
+
+    const order = await prisma.$transaction(async (tx) => {
+      if (status === OrderStatus.CANCELLED) {
+        for (const it of existing.items) {
+          await tx.product.update({ where: { id: it.productId }, data: { stock: { increment: it.quantity } } })
+        }
+      }
+      return tx.order.update({
+        where: { id },
+        data: { status: status as OrderStatus },
+        include: { items: { include: { product: true } }, user: { select: { id: true, name: true, email: true, phone: true } } },
+      })
+    })
+    return res.status(200).json({ order })
+  } catch (err) {
+    console.error('updateOrderStatus error', err)
     return res.status(500).json({ message: 'Internal server error' })
   }
 }
@@ -418,7 +446,7 @@ export const getOrder = async (req: Request, res: Response) => {
     if (!auth?.id) return res.status(401).json({ message: 'Unauthorized' })
 
     const { id } = req.params
-    const order = await prisma.order.findUnique({ where: { id }, include: { items: { include: { product: true } }, user: { select: { id: true, name: true, email: true } } } })
+    const order = await prisma.order.findUnique({ where: { id }, include: { items: { include: { product: true } }, user: { select: { id: true, name: true, email: true, phone: true } } } })
     if (!order) return res.status(404).json({ message: 'Order not found' })
 
     const isOwner = auth.role === 'OWNER'

@@ -11,7 +11,7 @@ export const register = async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'Validation failed', errors: parsed.error.flatten() });
     }
 
-    const { name, email, password, heightCm, weightKg, place, bio } = parsed.data;
+    const { name, email, phone, password, heightCm, weightKg, place, bio } = parsed.data;
     const normEmail = email.trim().toLowerCase();
 
     const existing = await prisma.user.findUnique({ where: { email: normEmail } });
@@ -25,6 +25,7 @@ export const register = async (req: Request, res: Response) => {
       data: {
         name,
         email: normEmail,
+        phone,
         password: passwordHash,
         heightCm: typeof heightCm === 'number' ? heightCm : undefined,
         weightKg: typeof weightKg === 'number' ? weightKg : undefined,
@@ -213,6 +214,14 @@ export const dashboard = async (req: Request, res: Response) => {
       where: { id: currentUser.id },
       include: { trainer: true },
     });
+    let planName: string | null = null
+    try {
+      const pid = (dbUser as any)?.planId as string | null | undefined
+      if (pid) {
+        const p = await (prisma as any).plan.findUnique({ where: { id: pid }, select: { name: true } })
+        planName = p?.name ?? null
+      }
+    } catch {}
     let trainersList: any[] = []
     try {
       const links = await (prisma as any).userTrainer.findMany({ where: { userId: currentUser.id }, include: { trainer: true } })
@@ -239,6 +248,7 @@ export const dashboard = async (req: Request, res: Response) => {
           createdAt: (dbUser as any).createdAt,
           // membership fields
           membershipPlan: (dbUser as any).membershipPlan ?? null,
+          planName,
           planStartsAt: (dbUser as any).planStartsAt ?? null,
           planEndsAt: (dbUser as any).planEndsAt ?? null,
           trainersLimit: (dbUser as any).trainersLimit ?? null,
